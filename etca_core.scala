@@ -125,6 +125,87 @@ class Core() extends Module {
   io.ram.req_addr := 0.U
   io.ram.req_wrd := 0.U
 
+  // TODO: support unaligned mem (and set feat bit)
+  // warning: use store_didld ad store_didld_val
+  def gen_write(s: UInt, addr: UInt, value: UInt, mem_ops_done: UInt) = {
+    //val unaligned = arg(1,0) =/= 0.U
+    val non32 = s =/= "b10".U
+    when (non32) {
+      // need load first
+      when (store_didld === 1.U) {
+        io.ram.have_req := 1.U
+        io.ram.req_iswr := 1.U
+        io.ram.req_addr := (addr >> 2) << 2 // remove low 2 bits
+
+        val by0 = Wire(UInt(8.W))
+        val by1 = Wire(UInt(8.W))
+        val by2 = Wire(UInt(8.W))
+        val by3 = Wire(UInt(8.W))
+        by0 := store_didld_val(7,0)
+        by1 := store_didld_val(15,8)
+        by2 := store_didld_val(23,16)
+        by3 := store_didld_val(31,24)
+
+        switch (addr(1,0)) {
+          is (0.U) {when (s === 0.U) {
+              by0 := value(7,0)
+            }.otherwise {
+              by0 := value(7,0)
+              by1 := value(15,8)
+          }}
+          is (1.U) {when (s === 0.U) {
+              by1 := value(7,0)
+            }.otherwise {
+              by1 := value(7,0)
+              by2 := value(15,8)
+          }}
+          is (2.U) {when (s === 0.U) {
+              by2 := value(7,0)
+            }.otherwise {
+              by2 := value(7,0)
+              by3 := value(15,8)
+          }}
+          is (3.U) {when (s === 0.U) {
+              by3 := value(7,0)
+            }.otherwise {
+              // unaligned
+          }}
+        }
+
+        io.ram.req_wrd := Cat(by3, by2, by1, by0)
+        when (io.ram.finished === 1.U) {
+          store_didld := 0.U
+        }
+        .otherwise {
+          mem_ops_done := 0.U
+        }
+      }
+      .otherwise {
+        io.ram.have_req := 1.U
+        io.ram.req_iswr := 0.U
+        io.ram.req_addr := (addr >> 2) << 2 // remove low 2 bits
+        io.ram.req_wrd := 0.U
+        when (io.ram.finished === 1.U) {
+          store_didld_val := io.ram.data
+          store_didld := 1.U
+        }
+        mem_ops_done := 0.U
+      }
+    }
+    .otherwise {
+      io.ram.have_req := 1.U
+      io.ram.req_iswr := 1.U
+      io.ram.req_addr := (addr >> 2) << 2 // remove low 2 bits
+      io.ram.req_wrd := value
+      when (io.ram.finished === 1.U) {
+      }
+      .otherwise {
+        // will always go into this branch until data received
+        mem_ops_done := 0.U
+      }
+    }
+  }
+
   when (io.reset === 1.U) {
     step := 0.U
     pc := 0x8000.U
@@ -252,94 +333,54 @@ class Core() extends Module {
               do_test := 0.U
             }
             is ("b1011".U) { // store
-              //val unaligned = arg(1,0) =/= 0.U
-              val non32 = s =/= "b10".U
-
-              // TODO: support unaligned mem (and set feat bit)
-
-              when (non32) {
-                // need load first
-                when (store_didld === 1.U) {
-                  io.ram.have_req := 1.U
-                  io.ram.req_iswr := 1.U
-                  io.ram.req_addr := (arg >> 2) << 2 // remove low 2 bits
-                  
-                  val by0 = Wire(UInt(8.W))
-                  val by1 = Wire(UInt(8.W))
-                  val by2 = Wire(UInt(8.W))
-                  val by3 = Wire(UInt(8.W))
-                  by0 := store_didld_val(7,0)
-                  by1 := store_didld_val(15,8)
-                  by2 := store_didld_val(23,16)
-                  by3 := store_didld_val(31,24)
-
-                  switch (arg(1,0)) {
-                    is (0.U) {when (s === 0.U) {
-                        by0 := gp(dest)(7,0)
-                      }.otherwise {
-                        by0 := gp(dest)(7,0)
-                        by1 := gp(dest)(15,8)
-                    }}
-                    is (1.U) {when (s === 0.U) {
-                        by1 := gp(dest)(7,0)
-                      }.otherwise {
-                        by1 := gp(dest)(7,0)
-                        by2 := gp(dest)(15,8)
-                    }}
-                    is (2.U) {when (s === 0.U) {
-                        by2 := gp(dest)(7,0)
-                      }.otherwise {
-                        by2 := gp(dest)(7,0)
-                        by3 := gp(dest)(15,8)
-                    }}
-                    is (3.U) {when (s === 0.U) {
-                        by3 := gp(dest)(7,0)
-                      }.otherwise {
-                        // unaligned
-                    }}
-                  }
-
-                  io.ram.req_wrd := Cat(by3, by2, by1, by0)
-                  when (io.ram.finished === 1.U) {
-                    store_didld := 0.U
-                  }
-                  .otherwise {
-                    mem_ops_done := 0.U
-                  }
-                }
-                .otherwise {
-                  io.ram.have_req := 1.U
-                  io.ram.req_iswr := 0.U
-                  io.ram.req_addr := (arg >> 2) << 2 // remove low 2 bits
-                  io.ram.req_wrd := 0.U
-                  when (io.ram.finished === 1.U) {
-                    store_didld_val := io.ram.data
-                    store_didld := 1.U
-                  }
-                  mem_ops_done := 0.U
-                }
-              }
-              .otherwise {
-                io.ram.have_req := 1.U
-                io.ram.req_iswr := 1.U
-                io.ram.req_addr := (arg >> 2) << 2 // remove low 2 bits
-                io.ram.req_wrd := gp(dest)
-                when (io.ram.finished === 1.U) {
-                }
-                .otherwise {
-                  // will always go into this branch until data received
-                  mem_ops_done := 0.U
-                }
-              }
+              gen_write(s, arg, gp(dest), mem_ops_done)
 
               out_value := 0.U
               do_test := 0.U
             }
             is ("b1100".U) {
-              out_value := Cat(Fill(1,0.U), (gp(dest) << 5) | arg(4,0))
-              do_test := 0.U
+              when (pat('i', op) === 1.U) { // slo
+                out_value := Cat(Fill(1,0.U), (gp(dest) << 5) | arg(4,0))
+                do_test := 0.U
+              }
+              .otherwise { // pop
+                val sp = pat('x', op) >> 2
+
+                io.ram.have_req := 1.U
+                io.ram.req_iswr := 0.U
+                io.ram.req_addr := gp(sp)
+                io.ram.req_wrd := 0.U
+                when (io.ram.finished === 1.U) {
+                  out_value := io.ram.data
+                  switch (s) {
+                    is ("b00".U) { gp(sp) := gp(sp) + 1.U }
+                    is ("b01".U) { gp(sp) := gp(sp) + 2.U }
+                    is ("b10".U) { gp(sp) := gp(sp) + 4.U }
+                  }
+                }
+                .otherwise {
+                  // will always go into this branch until data received
+                  out_value := 0.U
+                  mem_ops_done := 0.U
+                }
+
+                do_test := 0.U
+              }
             }
-            is ("b1101".U) { // reserved
+            is ("b1101".U) { // push
+              // dest is sp
+              val sz = Wire(UInt(3.W))
+              sz := 0.U
+              switch (s) {
+                is ("b00".U) { sz := 1.U }
+                is ("b01".U) { sz := 2.U }
+                is ("b10".U) { sz := 4.U }
+              }
+              gen_write(s, gp(dest) - sz, arg, mem_ops_done)
+              when (mem_ops_done === 1.U) {
+                gp(dest) := gp(dest) - sz
+              }
+
               out_value := 0.U
               do_test := 0.U
             }
@@ -396,7 +437,7 @@ class Core() extends Module {
           }
 
           when (mem_ops_done === 1.U) {
-            when (opcode =/= BitPat("b??11")) { // save result
+            when ((opcode =/= BitPat("b??11")) && (opcode =/= BitPat("b1101"))) { // save result
               when (opcode === BitPat("b1000")) { // movz: meaning zero extend
                 def gen(width: Int) = {
                   gp(dest) := Cat(Fill(32-width, 0.U), out_value(width-1, 0))
