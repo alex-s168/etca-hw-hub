@@ -126,10 +126,10 @@ int main(int argc, char ** argv)
 
     while (true) {
         core_dump(core);
-        printf("\n");
+        printf("\r");
         fflush(stdout);
         core_step(core);
-        usleep(200/*ms*/*1000);
+        usleep(40/*ms*/*1000);
     }
 
     printf("\n");

@@ -196,15 +196,15 @@ class Core() extends Module {
               do_test := 1.U
             }
             is ("b0001".U) { // sub
-              out_value := Cat(Fill(1,0.U), gp(dest)) - Cat(Fill(1,0.U), arg)
+              out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), ~arg) + 1.U
               do_test := 1.U
             }
             is ("b0010".U) { // rsub
-              out_value := Cat(Fill(1,0.U), arg) - Cat(Fill(1,0.U), gp(dest))
+              out_value := Cat(Fill(1,0.U), arg) + Cat(Fill(1,0.U), ~gp(dest)) + 1.U
               do_test := 1.U
             }
             is ("b0011".U) { // cmp
-              out_value := Cat(Fill(1,0.U), gp(dest)) - Cat(Fill(1,0.U), arg)
+              out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), ~arg) + 1.U
               do_test := 1.U
             }
             is ("b0100".U) { // or
@@ -293,8 +293,30 @@ class Core() extends Module {
             def gen(width: Int) = {
               fl_z := out_value(width-1, 0) === 0.U
               fl_n := out_value(width-1)
-              fl_c := out_value(width)
-              fl_v := (gp(dest)(width-1) === arg(width-1)) && (out_value(width-1) =/= arg(width-1))
+              when ((opcode === BitPat("b00??")) && opcode =/= 0.U) {
+                fl_c := !out_value(32)
+              }.otherwise {
+                fl_c := out_value(32,width) > 0.U
+              }
+
+              val moda = Wire(UInt(32.W))
+              moda := gp(dest)
+              val modb = Wire(UInt(32.W))
+              modb := arg
+              switch (opcode) {
+                is ("b0001".U) { // sub
+                  modb := ~arg
+                }
+                is ("b0010".U) { // rsub
+                  moda := ~arg
+                  modb := gp(dest)
+                }
+                is ("b0011".U) { // cmp
+                  modb := ~arg
+                }
+              }
+
+              fl_v := (moda(width-1) === modb(width-1)) && (out_value(width-1) =/= moda(width-1))
             }
 
             switch (s) {
