@@ -38,14 +38,18 @@ uint32_t core_read(Vetca_core* core, uint32_t addr)
         core->io_ram_req_wrd = 0;
         core_step(core);
     }
-    while (!core->io_ram_finished);
+    while (!(volatile bool)core->io_ram_finished);
+    uint32_t data = core->io_ram_data;
     core->io_ram_have_req = 0;
-    return core->io_ram_data;
+    core->io_ram_req_addr = 0;
+    core->io_ram_req_iswr = 0;
+    core->io_ram_req_wrd = 0;
+    core_step(core);
+    return data;
 }
 
 void core_write(Vetca_core* core, uint32_t addr, uint32_t value)
 {
-    printf("writing to %x\n", addr);
     do {
         core->io_ram_have_req = 1;
         core->io_ram_req_addr = addr;
@@ -55,6 +59,10 @@ void core_write(Vetca_core* core, uint32_t addr, uint32_t value)
     }
     while (!(volatile bool)core->io_ram_finished);
     core->io_ram_have_req = 0;
+    core->io_ram_req_addr = 0;
+    core->io_ram_req_iswr = 0;
+    core->io_ram_req_wrd = 0;
+    core_step(core);
 }
 
 void core_writen_pad4(Vetca_core* core, uint32_t begin, uint8_t const* data, size_t len)
@@ -62,15 +70,17 @@ void core_writen_pad4(Vetca_core* core, uint32_t begin, uint8_t const* data, siz
     size_t rem = len;
     for (size_t i = 0; i < len; i += 4) {
         char buf[4] = {0};
+
         size_t num = rem;
         if (num > 4) num = 4;
         memcpy(buf, data + i, num);
-        //printf("[%zu/%zu] copying memory\r", i, len);
+
+        printf("[%zu/%zu] copying memory\r", i, len);
         fflush(stdout);
         core_write(core, begin + i, *(uint32_t*)buf);
         rem -= num;
     }
-    //printf("[%zu/%zu] copying memory\n", len, len);
+    printf("[%zu/%zu] copying memory\n", len, len);
 }
 
 void core_dump(Vetca_core* core)
@@ -115,8 +125,8 @@ int main(int argc, char ** argv)
     core_step(core); // core init
 
     while (true) {
-        //core_dump(core);
-        //printf("\r");
+        core_dump(core);
+        printf("\n");
         fflush(stdout);
         core_step(core);
         sleep(1);

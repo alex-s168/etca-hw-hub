@@ -1,3 +1,4 @@
+set -e
 scala-cli etca_core.scala > etca_core.v
 verilator -cc etca_core.v
 cd obj_dir

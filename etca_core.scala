@@ -35,37 +35,58 @@ class BitExtract(patIn: String) {
 class AsyncMem extends Bundle {
   val have_req = Input(UInt(1.W))
   val req_iswr = Input(UInt(1.W))
-  val req_addr = Input(UInt(32.W))
+  val req_addr = Input(UInt(32.W)) // byte addr
   val req_wrd = Input(UInt(32.W))
 
-  val finished = Output(UInt(1.W))
+  val finished = Output(UInt(1.W)) // if set, data is available this tick
   val data = Output(UInt(32.W))
 }
 
 class SimpleAsyncMem(bytes: Int) extends Module {
   val io = IO(new AsyncMem())
-  val mem = SyncReadMem(bytes, UInt(32.W))
+  val mem = SyncReadMem(bytes/4, UInt(32.W))
 
-  val soon_finished = RegInit(0.U(1.W))
-  io.finished := soon_finished
-  soon_finished := 0.U
+  val mode = RegInit(0.U(2.W))
+  val data0 = Reg(UInt(32.W))
 
+  io.data := 0.U
   when (io.have_req === 1.U) {
-    when (io.req_iswr === 1.U) {
-      printf("write %x to %x\n", io.req_wrd, io.req_addr)
-      mem.write(io.req_addr, io.req_wrd)
-      soon_finished := 1.U
-      io.data := 0.U
+    when (io.req_addr(1,0) === 0.U) {
+      printf("aligned acces %x\n", io.req_addr);
+      io.data := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
+      mode := 2.U
     }
     .otherwise {
-      soon_finished := 1.U
-      val v = mem.read(io.req_addr)
-      io.data := v
-      printf("read %x from %x\n", v, io.req_addr)
+      // unaligned writes are not allowed!
+      when (mode === 0.U) {
+        printf("unaligned acces (step 0) %x\n", io.req_addr);
+        data0 := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
+        mode := 1.U
+      }.otherwise {
+        printf("unaligned acces (step 1) %x\n", io.req_addr);
+        val data1 = mem.readWrite((io.req_addr >> 2) + 1.U, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
+        switch (io.req_addr(1,0)) {
+          is (1.U) {
+            io.data := Cat(data1(7,0), data0(31,8))
+          }
+          is (2.U) {
+            io.data := Cat(data1(15,0), data0(31,16))
+          }
+          is (3.U) {
+            io.data := Cat(data1(23,0), data0(31,24))
+          }
+        }
+        mode := 2.U
+      }
     }
   }
+
+  when (mode === 2.U) {
+    mode := 0.U
+    io.finished := 1.U
+  }
   .otherwise {
-    io.data := 0.U
+    io.finished := 0.U
   }
 }
 
@@ -91,7 +112,7 @@ class Core() extends Module {
   val pc = Reg(UInt(32.W))
   val step = Reg(UInt(4.W))
   val gp = RegInit(VecInit(Seq.fill(8)(0.U(32.W))))
-  val op = Reg(UInt(32.W))
+  val op_in = Reg(UInt(32.W))
 
   val have_4B_ops = Reg(UInt(1.W))
 
@@ -125,7 +146,7 @@ class Core() extends Module {
         io.ram.req_wrd := 0.U
 
         when (io.ram.finished === 1.U) {
-          op := io.ram.data
+          op_in := io.ram.data
           have_4B_ops := 1.U
           step := 1.U
         }
@@ -133,6 +154,10 @@ class Core() extends Module {
 
       // exec
       is (1.U) {
+        printf("op_in %b %b %b %b\n", op_in(31,24), op_in(23,16), op_in(15,8), op_in(7,0));
+        val op = Cat(op_in(7,0), op_in(15,8))
+
+        printf("current op: %b %b (%x %x)\n", op(15,8), op(7,0), op(15,8), op(7,0));
         val was2B_and_next = Wire(UInt(1.W))
         was2B_and_next := 0.U
 
@@ -211,37 +236,38 @@ class Core() extends Module {
               do_test := 1.U
             }
             is ("b1010".U) { // load
-              io.ram.have_req := 1.U
-              io.ram.req_iswr := 0.U
-              io.ram.req_addr := arg
-              io.ram.req_wrd := 0.U
-
               when (io.ram.finished === 1.U) {
                 out_value := io.ram.data
               }
               .otherwise {
-              out_value := 0.U
                 // will always go into this branch until data received
+                
+                io.ram.have_req := 1.U
+                io.ram.req_iswr := 0.U
+                io.ram.req_addr := arg
+                io.ram.req_wrd := 0.U
+
+                out_value := 0.U
                 mem_ops_done := 0.U
               }
 
               do_test := 0.U
             }
             is ("b1011".U) { // store
-              // TODO: BREAKS FOR WHEN SIZE != 32
-              io.ram.have_req := 1.U
-              io.ram.req_iswr := 1.U
-              io.ram.req_addr := arg
-              io.ram.req_wrd := gp(dest)
-
-              out_value := 0.U
               when (io.ram.finished === 1.U) {
               }
               .otherwise {
+                // TODO: BREAKS FOR WHEN SIZE != 32; also breaks when not aligned
+                io.ram.have_req := 1.U
+                io.ram.req_iswr := 1.U
+                io.ram.req_addr := arg
+                io.ram.req_wrd := gp(dest)
+
                 // will always go into this branch until data received
                 mem_ops_done := 0.U
               }
 
+              out_value := 0.U
               do_test := 0.U
             }
             is ("b1100".U) { // slo
@@ -314,10 +340,12 @@ class Core() extends Module {
         }
 
         // simple jump instruction
-        when (op === BitPat("b100??????????????")) {
+        when (op === BitPat("b100?????????????")) {
           val pat = new BitExtract("x_cccc dddddddd")
           val disp9 = Cat(pat('x',op), pat('d',op))
           val disp = Cat(Fill(32-9, disp9(8)), disp9)
+
+          printf("cond: %b\n", pat('c',op))
 
           val cc = Wire(UInt(1.W))
           cc := 0.U
@@ -341,20 +369,24 @@ class Core() extends Module {
           }
 
           when (cc === 1.U) {
+            printf("disp: %b\n", disp)
+            printf("pc: %x (next: %x)\n", pc, pc + disp)
             pc := pc + disp
+            was2B_and_next := 0.U // TODO: replace with `disp === 0.U`
           }.otherwise {
             pc := pc + 2.U
+            was2B_and_next := 1.U
           }
 
           step := 0.U // fetch next op
-          was2B_and_next := 1.U
         }
 
         when ((was2B_and_next === 1.U) && (have_4B_ops === 1.U)) {
-          val next = op >> 16
+          val next = op_in >> 16
+          // TODO: when next is noop, skip
           when ((next === BitPat("b0???????????????")) || (next === BitPat("b100?????????????"))) {
             step := 1.U // directly exec next op
-            op := next
+            op_in := next
             have_4B_ops := 0.U
           }
         }
@@ -388,7 +420,7 @@ class TestCPU() extends Module {
   }.otherwise {
     core.io.ram :<>= mem.io;
     io.ram.finished := 0.U
-    io.ram.data := 0.U
+    io.ram.data := mem.io.data
   }
 
   core.io.reset := io.reset
