@@ -1,0 +1,9 @@
+.bsp
+.clangd
+.scala-build
+core
+*.a
+*.o
+a.out
+obj_dir
+etca_core.v

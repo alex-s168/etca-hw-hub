@@ -1,0 +1,400 @@
+//> using scala "2.13.12"
+//> using dep "org.chipsalliance::chisel:6.6.0"
+//> using plugin "org.chipsalliance:::chisel-plugin:6.6.0"
+//> using options "-unchecked", "-deprecation", "-language:reflectiveCalls", "-feature", "-Xcheckinit", "-Xfatal-warnings", "-Ywarn-dead-code", "-Ywarn-unused", "-Ymacro-annotations"
+
+import chisel3._
+import chisel3.util._
+// _root_ disambiguates from package chisel3.util.circt if user imports chisel3.util._
+import _root_.circt.stage.ChiselStage
+
+class BitExtract(patIn: String) {
+  val pat = patIn.replace("_", "").replace(" ", "")
+
+  def apply(c: Char): (Int, Int) = {
+    var first = pat.indexOf(c)
+    var last = pat.lastIndexOf(c)
+    if (pat.slice(first, last+1).exists(_ != c)) {
+      throw new Exception("this type of pattern is not supported yet");
+    }
+    first = pat.length-first-1
+    last = pat.length-last-1
+    if (first > last) {
+      (first, last)
+    } else {
+      (last, first)
+    }
+  }
+
+  def apply(c: Char, v: UInt): UInt = {
+    val p = apply(c)
+    v(p._1, p._2)
+  }
+}
+
+class AsyncMem extends Bundle {
+  val have_req = Input(UInt(1.W))
+  val req_iswr = Input(UInt(1.W))
+  val req_addr = Input(UInt(32.W))
+  val req_wrd = Input(UInt(32.W))
+
+  val finished = Output(UInt(1.W))
+  val data = Output(UInt(32.W))
+}
+
+class SimpleAsyncMem(bytes: Int) extends Module {
+  val io = IO(new AsyncMem())
+  val mem = SyncReadMem(bytes, UInt(32.W))
+
+  when (io.have_req === 1.U) {
+    when (io.req_iswr === 1.U) {
+      printf("write %x to %x\n", io.req_wrd, io.req_addr)
+      mem.write(io.req_addr, io.req_wrd)
+      io.finished := 1.U
+      io.data := 0.U
+    }
+    .otherwise {
+      io.finished := 1.U
+      io.data := mem.read(io.req_addr)
+      printf("read %x from %x\n", io.data, io.req_addr)
+    }
+  }
+  .otherwise {
+    io.finished := 0.U
+    io.data := 0.U
+  }
+}
+
+class Core() extends Module {
+  val cpuid1 = "b0100000000001000"
+  val cpuid2 = "b0000000000000000"
+  val feat = "b0000000000000000"
+
+  val io = IO(new Bundle {
+    val reset = Input(UInt(1.W))
+    val ram = Flipped(new AsyncMem())
+
+    val core_flags = Output(UInt(4.W))
+    val core_pc = Output(UInt(32.W))
+    val core_regs = Output(Vec(8, UInt(32.W)))
+  })
+
+  val fl_z = Reg(UInt(1.W))
+  val fl_n = Reg(UInt(1.W))
+  val fl_c = Reg(UInt(1.W))
+  val fl_v = Reg(UInt(1.W))
+
+  val pc = Reg(UInt(32.W))
+  val step = Reg(UInt(4.W))
+  val gp = RegInit(VecInit(Seq.fill(8)(0.U(32.W))))
+  val op = Reg(UInt(32.W))
+
+  val have_4B_ops = Reg(UInt(1.W))
+
+  io.core_flags := Cat(fl_v, fl_c, fl_n, fl_z)
+  io.core_pc := pc
+  io.core_regs := gp
+
+  io.ram.have_req := 0.U
+  io.ram.req_iswr := 0.U
+  io.ram.req_addr := 0.U
+  io.ram.req_wrd := 0.U
+
+  when (io.reset === 1.U) {
+    step := 0.U
+    pc := 0x8000.U
+    fl_z := 0.U
+    fl_n := 0.U
+    fl_c := 0.U
+    fl_v := 0.U
+    for (i <- 0 to 7) {
+      gp(i) := 0.U
+    }
+  }
+  .otherwise {
+    switch (step) {
+      // wait for mem
+      is (0.U) {
+        io.ram.have_req := 1.U
+        io.ram.req_iswr := 0.U
+        io.ram.req_addr := pc
+        io.ram.req_wrd := 0.U
+
+        when (io.ram.finished === 1.U) {
+          op := io.ram.data
+          have_4B_ops := 1.U
+          step := 1.U
+        }
+      }
+
+      // exec
+      is (1.U) {
+        val was2B_and_next = Wire(UInt(1.W))
+        was2B_and_next := 0.U
+
+        // simple computational instruction
+        when (op === BitPat("b0????????????????")) {
+          val pat = new BitExtract("i_ss_cccc ddd_xxxxx")
+          val s = pat('s', op)
+          val dest = pat('d', op)
+          val opcode = pat('c', op)
+
+          // 0-7 and 9 is sign_extend
+          val input_sign_extend = Wire(UInt(1.W))
+          input_sign_extend := !(opcode >> 3)
+          when (9.U === opcode) {
+            input_sign_extend := 1.U
+          }
+
+          val arg = Wire(UInt(32.W))
+          when (pat('i', op) === 1.U) {
+            val s = pat('x', op)
+            when (input_sign_extend === 1.U) {
+              arg := Cat(Fill(32-5, s(4)), s)
+            } .otherwise {
+              arg := Cat(Fill(32-5, 0.U), s)
+            }
+          } .otherwise {
+            val pat2 = new BitExtract("sss_mm")
+            arg := gp(pat2('s', op))
+          }
+
+          val out_value = Wire(UInt(33.W))
+          out_value := 0.U
+          val do_test = Wire(UInt(1.W))
+          do_test := 0.U
+          val mem_ops_done = Wire(UInt(1.W))
+          mem_ops_done := 1.U
+          switch (opcode) {
+            is ("b0000".U) { // add
+              out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), arg)
+              do_test := 1.U
+            }
+            is ("b0001".U) { // sub
+              out_value := Cat(Fill(1,0.U), gp(dest)) - Cat(Fill(1,0.U), arg)
+              do_test := 1.U
+            }
+            is ("b0010".U) { // rsub
+              out_value := Cat(Fill(1,0.U), arg) - Cat(Fill(1,0.U), gp(dest))
+              do_test := 1.U
+            }
+            is ("b0011".U) { // cmp
+              out_value := Cat(Fill(1,0.U), gp(dest)) - Cat(Fill(1,0.U), arg)
+              do_test := 1.U
+            }
+            is ("b0100".U) { // or
+              out_value := Cat(Fill(1,0.U), gp(dest) | arg)
+              do_test := 1.U
+            }
+            is ("b0101".U) { // xor
+              out_value := Cat(Fill(1,0.U), gp(dest) ^ arg)
+              do_test := 1.U
+            }
+            is ("b0110".U) { // and
+              out_value := Cat(Fill(1,0.U), gp(dest) & arg)
+              do_test := 1.U
+            }
+            is ("b0111".U) { // test
+              out_value := Cat(Fill(1,0.U), gp(dest) & arg)
+              do_test := 1.U
+            }
+            is ("b1000".U) { // movz
+              out_value := Cat(Fill(1,0.U), arg)
+              do_test := 1.U
+            }
+            is ("b1001".U) { // movs
+              out_value := Cat(Fill(1,0.U), arg)
+              do_test := 1.U
+            }
+            is ("b1010".U) { // load
+              io.ram.have_req := 1.U
+              io.ram.req_iswr := 0.U
+              io.ram.req_addr := arg
+              io.ram.req_wrd := 0.U
+
+              when (io.ram.finished === 1.U) {
+                out_value := io.ram.data
+              }
+              .otherwise {
+              out_value := 0.U
+                // will always go into this branch until data received
+                mem_ops_done := 0.U
+              }
+
+              do_test := 0.U
+            }
+            is ("b1011".U) { // store
+              // TODO: BREAKS FOR WHEN SIZE != 32
+              io.ram.have_req := 1.U
+              io.ram.req_iswr := 1.U
+              io.ram.req_addr := arg
+              io.ram.req_wrd := gp(dest)
+
+              out_value := 0.U
+              when (io.ram.finished === 1.U) {
+              }
+              .otherwise {
+                // will always go into this branch until data received
+                mem_ops_done := 0.U
+              }
+
+              do_test := 0.U
+            }
+            is ("b1100".U) { // slo
+              out_value := Cat(Fill(1,0.U), (gp(dest) << 5) | arg(4,0))
+              do_test := 0.U
+            }
+            is ("b1101".U) { // reserved
+              out_value := 0.U
+              do_test := 0.U
+            }
+            is ("b1110".U) { // readcr
+              out_value := 0.U
+              switch (arg) {
+                is (0.U) { out_value := cpuid1.U }
+                is (1.U) { out_value := cpuid2.U }
+                is (2.U) { out_value := feat.U }
+              }
+              do_test := 0.U
+            }
+            is ("b1111".U) { // writecr
+              out_value := 0.U
+              do_test := 0.U
+            }
+          }
+
+          when (do_test === 1.U) {
+            def gen(width: Int) = {
+              fl_z := out_value(width-1, 0) === 0.U
+              fl_n := out_value(width-1)
+              fl_c := out_value(width)
+              fl_v := (gp(dest)(width-1) === arg(width-1)) && (out_value(width-1) =/= arg(width-1))
+            }
+
+            switch (s) {
+              is ("b00".U) { gen(8) }
+              is ("b01".U) { gen(16) }
+              is ("b10".U) { gen(32) }
+            }
+          }
+
+          when (mem_ops_done === 1.U) {
+            when (opcode =/= BitPat("b??11")) { // save result
+              when (opcode === BitPat("b1000")) { // movz: meaning zero extend
+                def gen(width: Int) = {
+                  gp(dest) := Cat(Fill(32-width, 0.U), out_value(width-1, 0))
+                }
+
+                switch (s) {
+                  is ("b00".U) { gen(8) }
+                  is ("b01".U) { gen(16) }
+                  is ("b10".U) { gp(dest) := out_value }
+                }
+              }.otherwise { // sign extend
+                def gen(width: Int) = {
+                  gp(dest) := Cat(Fill(32-width, out_value(width-1)), out_value(width-1, 0))
+                }
+
+                switch (s) {
+                  is ("b00".U) { gen(8) }
+                  is ("b01".U) { gen(16) }
+                  is ("b10".U) { gp(dest) := out_value }
+                }
+              }
+            }
+
+            pc := pc + 2.U
+            step := 0.U // fetch next op
+            was2B_and_next := 1.U
+          }
+        }
+
+        // simple jump instruction
+        when (op === BitPat("b100??????????????")) {
+          val pat = new BitExtract("x_cccc dddddddd")
+          val disp9 = Cat(pat('x',op), pat('d',op))
+          val disp = Cat(Fill(32-9, disp9(8)), disp9)
+
+          val cc = Wire(UInt(1.W))
+          cc := 0.U
+          switch (pat('c',op)) {
+            is ("b0000".U) { cc := fl_z }
+            is ("b0001".U) { cc := !fl_z }
+            is ("b0010".U) { cc := fl_n }
+            is ("b0011".U) { cc := !fl_n }
+            is ("b0100".U) { cc := fl_c }
+            is ("b0101".U) { cc := !fl_c }
+            is ("b0110".U) { cc := fl_v }
+            is ("b0111".U) { cc := !fl_v }
+            is ("b1000".U) { cc := fl_c | fl_z }
+            is ("b1001".U) { cc := !(fl_c | fl_z) }
+            is ("b1010".U) { cc := fl_n =/= fl_v }
+            is ("b1011".U) { cc := fl_n === fl_v }
+            is ("b1100".U) { cc := fl_z | (fl_n =/= fl_v) }
+            is ("b1101".U) { cc := (!fl_z) & (fl_n === fl_v) }
+            is ("b1110".U) { cc := 1.U }
+            is ("b1111".U) { cc := 0.U }
+          }
+
+          when (cc === 1.U) {
+            pc := pc + disp
+          }.otherwise {
+            pc := pc + 2.U
+          }
+
+          step := 0.U // fetch next op
+          was2B_and_next := 1.U
+        }
+
+        when ((was2B_and_next === 1.U) && (have_4B_ops === 1.U)) {
+          val next = op >> 16
+          when ((next === BitPat("b0???????????????")) || (next === BitPat("b100?????????????"))) {
+            step := 1.U // directly exec next op
+            op := next
+            have_4B_ops := 0.U
+          }
+        }
+      }
+    }
+  }
+}
+
+class TestCPU() extends Module {
+  val mem = Module(new SimpleAsyncMem(64*1024*1024)); // 64 MB
+  val core = Module(new Core);
+
+  val io = IO(new Bundle {
+    val ram = new AsyncMem()
+
+    val reset = Input(UInt(1.W))
+
+    val core_flags = Output(UInt(4.W))
+    val core_pc = Output(UInt(32.W))
+    val core_regs = Output(Vec(8, UInt(32.W)))
+  })
+
+  io.core_flags := core.io.core_flags
+  io.core_pc := core.io.core_pc
+  io.core_regs := core.io.core_regs
+
+  when (io.ram.have_req === 1.U) {
+    io.ram <> mem.io;
+    core.io.ram.finished := 0.U
+    core.io.ram.data := 0.U
+  }.otherwise {
+    core.io.ram :<>= mem.io;
+    io.ram.finished := 0.U
+    io.ram.data := 0.U
+  }
+
+  core.io.reset := io.reset
+}
+
+object Main extends App {
+  println(
+    ChiselStage.emitSystemVerilog(
+      gen = new TestCPU,
+      firtoolOpts = Array("-disable-all-randomization", "-strip-debug-info")
+    )
+  )
+}
