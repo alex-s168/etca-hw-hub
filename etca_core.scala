@@ -46,21 +46,25 @@ class SimpleAsyncMem(bytes: Int) extends Module {
   val io = IO(new AsyncMem())
   val mem = SyncReadMem(bytes, UInt(32.W))
 
+  val soon_finished = RegInit(0.U(1.W))
+  io.finished := soon_finished
+  soon_finished := 0.U
+
   when (io.have_req === 1.U) {
     when (io.req_iswr === 1.U) {
       printf("write %x to %x\n", io.req_wrd, io.req_addr)
       mem.write(io.req_addr, io.req_wrd)
-      io.finished := 1.U
+      soon_finished := 1.U
       io.data := 0.U
     }
     .otherwise {
-      io.finished := 1.U
-      io.data := mem.read(io.req_addr)
-      printf("read %x from %x\n", io.data, io.req_addr)
+      soon_finished := 1.U
+      val v = mem.read(io.req_addr)
+      io.data := v
+      printf("read %x from %x\n", v, io.req_addr)
     }
   }
   .otherwise {
-    io.finished := 0.U
     io.data := 0.U
   }
 }

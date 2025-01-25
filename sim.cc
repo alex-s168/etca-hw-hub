@@ -23,7 +23,9 @@ static std::vector<uint8_t> readfile(const char * file)
 
 void core_step(Vetca_core* core)
 {
-    core->clock = !core->clock;
+    core->clock = 1;
+    core->eval();
+    core->clock = 0;
     core->eval();
 }
 
@@ -43,6 +45,7 @@ uint32_t core_read(Vetca_core* core, uint32_t addr)
 
 void core_write(Vetca_core* core, uint32_t addr, uint32_t value)
 {
+    printf("writing to %x\n", addr);
     do {
         core->io_ram_have_req = 1;
         core->io_ram_req_addr = addr;
@@ -50,7 +53,7 @@ void core_write(Vetca_core* core, uint32_t addr, uint32_t value)
         core->io_ram_req_wrd = value;
         core_step(core);
     }
-    while (!core->io_ram_finished);
+    while (!(volatile bool)core->io_ram_finished);
     core->io_ram_have_req = 0;
 }
 
@@ -95,17 +98,21 @@ int main(int argc, char ** argv)
 
     Vetca_core* core = new Vetca_core;
     core->clock = 0;
+    core->reset = 0;
     core->io_ram_have_req = 0;
     core->io_ram_req_addr = 0;
     core->io_ram_req_iswr = 0;
     core->io_ram_req_wrd = 0;
-    core->reset = 1;
+    core->io_reset = 1;
+
+    // hw init (needed for verilator or sth)
+    core_step(core);
 
     core_writen_pad4(core, 0x8000, exec.data(), exec.size());
 
-    core->reset = 0;
+    core->io_reset = 0;
 
-    core_step(core); // init
+    core_step(core); // core init
 
     while (true) {
         //core_dump(core);
