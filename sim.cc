@@ -1,6 +1,7 @@
 #include "verilated.h"
 #include "obj_dir/Vetca_core.h"
 
+#include <cstring>
 #include <unistd.h>
 #include <vector>
 #include <cstdint>
@@ -118,11 +119,15 @@ int main(int argc, char ** argv)
     // hw init (needed for verilator or sth)
     core_step(core);
 
-    core_writen_pad4(core, 0x8000, exec.data(), exec.size());
+    core_writen_pad4(core, 0xFFFF8000l, exec.data(), exec.size());
 
     core->io_reset = 0;
 
     core_step(core); // core init
+
+    uint32_t pc_hist[64];
+    for (size_t i = 0; i < 64; i ++)
+        pc_hist[i] = i;
 
     while (true) {
         printf("\33[2K");
@@ -131,10 +136,24 @@ int main(int argc, char ** argv)
 
         fflush(stdout);
         core_step(core);
-        usleep(40/*ms*/*1000);
-    }
+        //usleep(1/*ms*/*1000);
 
-    printf("\n");
+        memmove(pc_hist, pc_hist + 1, sizeof(uint32_t) * 63);
+        pc_hist[63] = core->io_core_pc;
+
+        bool all = true;
+        for (size_t i = 0; i < 64; i ++) {
+            if (pc_hist[i] != pc_hist[0]) {
+                all = false;
+                break;
+            }
+        }
+
+        if (all) {
+            printf("\nprobably in infinite loop. stopped.\n");
+            break;
+        }
+    }
 
     core->final();
 }

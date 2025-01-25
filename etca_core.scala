@@ -42,26 +42,52 @@ class AsyncMem extends Bundle {
   val data = Output(UInt(32.W))
 }
 
-class SimpleAsyncMem(bytes: Int) extends Module {
-  val io = IO(new AsyncMem())
-  val mem = SyncReadMem(bytes/4, UInt(32.W))
+class MemMap(areas: /*byte address -> size*/ Map[Long, Long])
+{
+  def gen() : AsyncMemImpl[List[SyncReadMem[UInt]]] = {
+    new AsyncMemImpl[List[SyncReadMem[UInt]]](
+      () => areas.map{case (_,sz:Long) => SyncReadMem(sz, UInt(32.W))}.toList,
+      (mems, addr,wrd,en,wr) => {
+        when (addr === 0.U && wr) {
+          printf("putc: %c\n", wrd(31,24))
+        }
 
+        val out = Wire(UInt(32.W))
+        out := 0.U
+        for (((begin, sz), mem) <- areas zip mems) {
+          when ((addr >= (begin >> 2).U) && (addr < ((begin+sz) >> 2).U)) {
+            out := mem.readWrite(addr,wrd,en,wr)
+          }
+        }
+        out
+      }
+    )
+  }
+}
+
+class AsyncMemImpl[T](
+  init : () => T,
+  readWrite : (T, /*addr*/UInt, /*wrd*/UInt, /*req*/Bool, /*iswr*/Bool) => UInt
+) extends Module {
+  val _c = init()
+
+  val io = IO(new AsyncMem)
   val mode = RegInit(0.U(2.W))
   val data0 = Reg(UInt(32.W))
 
   io.data := 0.U
   when (io.have_req === 1.U) {
     when (io.req_addr(1,0) === 0.U) {
-      io.data := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
+      io.data := readWrite(_c, io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
       mode := 2.U
     }
     .otherwise {
-      data0 := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
+      data0 := readWrite(_c, io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
       // unaligned writes are not allowed!
       when (mode === 0.U) {
         mode := 1.U
       }.otherwise {
-        val data1 = mem.readWrite((io.req_addr >> 2) + 1.U, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
+        val data1 = readWrite(_c, (io.req_addr >> 2) + 1.U, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
         switch (io.req_addr(1,0)) {
           is (1.U) {
             io.data := Cat(data1(7,0), data0(31,8))
@@ -88,11 +114,34 @@ class SimpleAsyncMem(bytes: Int) extends Module {
 }
 
 class Core() extends Module {
-  // TODO: MODE CONTROL REGISTER
+  val C1_FI  = 1L << 0
+  val C1_SF  = 1L << 1
+  val C1_INT = 1L << 2
+  val C1_8B  = 1L << 3
+  val C1_CC  = 1L << 4
+  val C1_EXR = 1L << 5
+  val C1_CH  = 1L << 6
+  val C1_ASP = 1L << 7
+  val C1_MO2 = 1L << 13
+  val C1_32B = 1L << 14
+  val C1_64B = 1L << 15
+  val C1_32A = 1L << 16
+  val C1_64A = 1L << 32
 
-  val cpuid1 = "b0100000010001010"
-  val cpuid2 = "b0000000000000000"
-  val feat = "b0000000000000001"
+  val C2_EOP = 1L << 0
+  val C2_MO1 = 1L << 1
+  val C2_PRV = 1L << 2
+  val C2_MDV = 1L << 3
+  val C2_BM1 = 1L << 4
+
+  val F_VN   = 1L << 0
+  val F_UAM  = 1L << 1
+  val F_CCH  = 1L << 2
+  val F_MMAI = 1L << 3
+
+  val cpuid1 = C1_SF | C1_8B | C1_ASP | C1_32B | C1_32A
+  val cpuid2 = 0
+  val feat = F_VN
 
   val io = IO(new Bundle {
     val reset = Input(UInt(1.W))
@@ -117,6 +166,9 @@ class Core() extends Module {
 
   val store_didld = RegInit(0.U(1.W))
   val store_didld_val = Reg(UInt(32.W))
+
+  // either 0: 16 bit, or 2: 32 bit
+  val mode = RegInit(0.U(2.W))
 
   io.core_flags := Cat(fl_v, fl_c, fl_n, fl_z)
   io.core_pc := pc
@@ -233,9 +285,19 @@ class Core() extends Module {
     return cc
   }
 
+  def fix_addr(addr: UInt) : UInt = {
+    val out = Wire(UInt(32.W))
+    out := addr
+    when (mode === 0.U) { // 16 bit mode
+      val addr16 = addr(15,0)
+      out := Cat(Fill(16, addr16(15)), addr16)
+    }
+    return out
+  }
+
   when (io.reset === 1.U) {
     step := 0.U
-    pc := 0x8000.U
+    pc := "xFFFF8000".U
     fl_z := 0.U
     fl_n := 0.U
     fl_c := 0.U
@@ -244,6 +306,7 @@ class Core() extends Module {
       gp(i) := 0.U
     }
     store_didld := 0.U
+    mode := 0.U
   }
   .otherwise {
     switch (step) {
@@ -251,7 +314,7 @@ class Core() extends Module {
       is (0.U) {
         io.ram.have_req := 1.U
         io.ram.req_iswr := 0.U
-        io.ram.req_addr := pc
+        io.ram.req_addr := fix_addr(pc)
         io.ram.req_wrd := 0.U
 
         when (io.ram.finished === 1.U) {
@@ -346,7 +409,7 @@ class Core() extends Module {
             is ("b1010".U) { // load
               io.ram.have_req := 1.U
               io.ram.req_iswr := 0.U
-              io.ram.req_addr := arg
+              io.ram.req_addr := fix_addr(arg)
               io.ram.req_wrd := 0.U
               when (io.ram.finished === 1.U) {
                 out_value := io.ram.data
@@ -360,7 +423,7 @@ class Core() extends Module {
               do_test := 0.U
             }
             is ("b1011".U) { // store
-              gen_write(s, arg, gp(dest), mem_ops_done)
+              gen_write(s, fix_addr(arg), gp(dest), mem_ops_done)
 
               out_value := 0.U
               do_test := 0.U
@@ -375,7 +438,7 @@ class Core() extends Module {
 
                 io.ram.have_req := 1.U
                 io.ram.req_iswr := 0.U
-                io.ram.req_addr := gp(sp)
+                io.ram.req_addr := fix_addr(gp(sp))
                 io.ram.req_wrd := 0.U
                 when (io.ram.finished === 1.U) {
                   out_value := io.ram.data
@@ -403,7 +466,7 @@ class Core() extends Module {
                 is ("b01".U) { sz := 2.U }
                 is ("b10".U) { sz := 4.U }
               }
-              gen_write(s, gp(dest) - sz, arg, mem_ops_done)
+              gen_write(s, fix_addr(gp(dest) - sz), arg, mem_ops_done)
               when (mem_ops_done === 1.U) {
                 gp(dest) := gp(dest) - sz
               }
@@ -421,6 +484,12 @@ class Core() extends Module {
               do_test := 0.U
             }
             is ("b1111".U) { // writecr
+              switch (arg) {
+                is (17.U) {
+                  printf("mode changed to x%x\n", gp(dest))
+                  mode := gp(dest) 
+                }
+              }
               out_value := 0.U
               do_test := 0.U
             }
@@ -561,8 +630,12 @@ class Core() extends Module {
 }
 
 class TestCPU() extends Module {
-  val mem = Module(new SimpleAsyncMem(64*1024*1024)); // 64 MB
-  val core = Module(new Core);
+  val mem = Module(new MemMap(Map(
+    0x00000000L -> 64L*1024L*1024L, // 64 MB (prog heap)
+    0x80000000L -> 64L*1024L,       // 64 KB (asm heap)
+    0xFFFF0000L -> 64L*1024L,       // 64 KB (stack + program)
+  )).gen())
+  val core = Module(new Core)
 
   val io = IO(new Bundle {
     val ram = new AsyncMem()
