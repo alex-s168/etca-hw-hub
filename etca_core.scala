@@ -88,7 +88,9 @@ class SimpleAsyncMem(bytes: Int) extends Module {
 }
 
 class Core() extends Module {
-  val cpuid1 = "b0100000000001010"
+  // TODO: MODE CONTROL REGISTER
+
+  val cpuid1 = "b0100000010001010"
   val cpuid2 = "b0000000000000000"
   val feat = "b0000000000000001"
 
@@ -128,6 +130,7 @@ class Core() extends Module {
   // TODO: support unaligned mem (and set feat bit)
   // warning: use store_didld ad store_didld_val
   def gen_write(s: UInt, addr: UInt, value: UInt, mem_ops_done: UInt) = {
+    mem_ops_done := 1.U
     //val unaligned = arg(1,0) =/= 0.U
     val non32 = s =/= "b10".U
     when (non32) {
@@ -204,6 +207,30 @@ class Core() extends Module {
         mem_ops_done := 0.U
       }
     }
+  }
+
+  def gen_cccc_check(cccc: UInt) : UInt = {
+    val cc = Wire(UInt(1.W))
+    cc := 0.U
+    switch (cccc) {
+      is ("b0000".U) { cc := fl_z }
+      is ("b0001".U) { cc := !fl_z }
+      is ("b0010".U) { cc := fl_n }
+      is ("b0011".U) { cc := !fl_n }
+      is ("b0100".U) { cc := fl_c }
+      is ("b0101".U) { cc := !fl_c }
+      is ("b0110".U) { cc := fl_v }
+      is ("b0111".U) { cc := !fl_v }
+      is ("b1000".U) { cc := fl_c | fl_z }
+      is ("b1001".U) { cc := !(fl_c | fl_z) }
+      is ("b1010".U) { cc := fl_n =/= fl_v }
+      is ("b1011".U) { cc := fl_n === fl_v }
+      is ("b1100".U) { cc := fl_z | (fl_n =/= fl_v) }
+      is ("b1101".U) { cc := (!fl_z) & (fl_n === fl_v) }
+      is ("b1110".U) { cc := 1.U }
+      is ("b1111".U) { cc := 0.U }
+    }
+    return cc
   }
 
   when (io.reset === 1.U) {
@@ -473,27 +500,7 @@ class Core() extends Module {
           val disp9 = Cat(pat('x',op), pat('d',op))
           val disp = Cat(Fill(32-9, disp9(8)), disp9)
 
-          val cc = Wire(UInt(1.W))
-          cc := 0.U
-          switch (pat('c',op)) {
-            is ("b0000".U) { cc := fl_z }
-            is ("b0001".U) { cc := !fl_z }
-            is ("b0010".U) { cc := fl_n }
-            is ("b0011".U) { cc := !fl_n }
-            is ("b0100".U) { cc := fl_c }
-            is ("b0101".U) { cc := !fl_c }
-            is ("b0110".U) { cc := fl_v }
-            is ("b0111".U) { cc := !fl_v }
-            is ("b1000".U) { cc := fl_c | fl_z }
-            is ("b1001".U) { cc := !(fl_c | fl_z) }
-            is ("b1010".U) { cc := fl_n =/= fl_v }
-            is ("b1011".U) { cc := fl_n === fl_v }
-            is ("b1100".U) { cc := fl_z | (fl_n =/= fl_v) }
-            is ("b1101".U) { cc := (!fl_z) & (fl_n === fl_v) }
-            is ("b1110".U) { cc := 1.U }
-            is ("b1111".U) { cc := 0.U }
-          }
-
+          val cc = gen_cccc_check(pat('c',op))
           when (cc === 1.U) {
             pc := pc + disp
             when (disp === 0.U) {
@@ -507,6 +514,36 @@ class Core() extends Module {
             was2B_and_next := 1.U
             step := 0.U // fetch next op
           }
+        }
+
+        // jump/call to register instruction
+        when (op === BitPat("b10101111????????")) {
+          val pat = new BitExtract("aaa i cccc")
+          val dest = gp(pat('a',op))
+          val cc = gen_cccc_check(pat('c',op))
+          when (cc === 1.U) {
+            when (pat('i',op) === 1.U) { // call
+              gp(7) := pc + 2.U // set ln register to next instr
+            }
+            pc := dest
+            was2B_and_next := 0.U
+          }.otherwise {
+            pc := pc + 2.U
+            was2B_and_next := 1.U
+          }
+          step := 0.U // fetch next op
+        }
+
+        // unconditional function call
+        when (op === BitPat("b1011????????????")) {
+          val pat = new BitExtract("dddd dddddddd")
+          val disp12 = pat('d',op)
+          val disp = Cat(Fill(32-12, disp12(11)), disp12)
+
+          gp(7) := pc + 2.U // set ln register to next instr
+          pc := pc + disp
+          step := 0.U // fetch next op
+          was2B_and_next := 0.U
         }
 
         when ((was2B_and_next === 1.U) && (have_4B_ops === 1.U)) {

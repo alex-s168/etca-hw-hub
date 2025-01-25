@@ -125,8 +125,10 @@ int main(int argc, char ** argv)
     core_step(core); // core init
 
     while (true) {
+        printf("\33[2K");
         core_dump(core);
         printf("\r");
+
         fflush(stdout);
         core_step(core);
         usleep(40/*ms*/*1000);
