@@ -31,17 +31,20 @@ struct mem_read {
     response_x_bitmask: u8,
     response_y_bitmask: u8,
     response_port u4,
-    /// maximum 16 bytes (noc width)
+    /// gets multiplied by 4; maximum 4 (=16 bytes)
     read_len: u4,
+
+    /// low two bits of address have to be zero
     address: u32,
     ...pading
 }
 
 /// in data array of a noc_packet to port `9` of a memory controler
 struct mem_write {
-    /// maximum 8 bytes
+    /// gets multiplied by 4; maximum 2 (=8 bytes)
     write_len: u3,
     _reserved: u5,
+    /// low two bits of address have to be zero
     address: u32,
     data: [u8; 8],
     ...padding

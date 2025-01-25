@@ -129,7 +129,7 @@ int main(int argc, char ** argv)
         printf("\n");
         fflush(stdout);
         core_step(core);
-        sleep(1);
+        usleep(200/*ms*/*1000);
     }
 
     printf("\n");

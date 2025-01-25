@@ -52,18 +52,15 @@ class SimpleAsyncMem(bytes: Int) extends Module {
   io.data := 0.U
   when (io.have_req === 1.U) {
     when (io.req_addr(1,0) === 0.U) {
-      printf("aligned acces %x\n", io.req_addr);
       io.data := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
       mode := 2.U
     }
     .otherwise {
+      data0 := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
       // unaligned writes are not allowed!
       when (mode === 0.U) {
-        printf("unaligned acces (step 0) %x\n", io.req_addr);
-        data0 := mem.readWrite(io.req_addr >> 2, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
         mode := 1.U
       }.otherwise {
-        printf("unaligned acces (step 1) %x\n", io.req_addr);
         val data1 = mem.readWrite((io.req_addr >> 2) + 1.U, io.req_wrd, io.have_req === 1.U, io.req_iswr === 1.U)
         switch (io.req_addr(1,0)) {
           is (1.U) {
@@ -154,15 +151,14 @@ class Core() extends Module {
 
       // exec
       is (1.U) {
-        printf("op_in %b %b %b %b\n", op_in(31,24), op_in(23,16), op_in(15,8), op_in(7,0));
         val op = Cat(op_in(7,0), op_in(15,8))
 
-        printf("current op: %b %b (%x %x)\n", op(15,8), op(7,0), op(15,8), op(7,0));
+        //printf("current op: %b %b (%x %x)\n", op(15,8), op(7,0), op(15,8), op(7,0));
         val was2B_and_next = Wire(UInt(1.W))
         was2B_and_next := 0.U
 
         // simple computational instruction
-        when (op === BitPat("b0????????????????")) {
+        when (op === BitPat("b0???????????????")) {
           val pat = new BitExtract("i_ss_cccc ddd_xxxxx")
           val s = pat('s', op)
           val dest = pat('d', op)
@@ -345,8 +341,6 @@ class Core() extends Module {
           val disp9 = Cat(pat('x',op), pat('d',op))
           val disp = Cat(Fill(32-9, disp9(8)), disp9)
 
-          printf("cond: %b\n", pat('c',op))
-
           val cc = Wire(UInt(1.W))
           cc := 0.U
           switch (pat('c',op)) {
@@ -369,16 +363,18 @@ class Core() extends Module {
           }
 
           when (cc === 1.U) {
-            printf("disp: %b\n", disp)
-            printf("pc: %x (next: %x)\n", pc, pc + disp)
             pc := pc + disp
-            was2B_and_next := 0.U // TODO: replace with `disp === 0.U`
+            when (disp === 0.U) {
+              step := 1.U // exec next op
+            }.otherwise {
+              step := 0.U // fetch next op
+            }
+            was2B_and_next := 0.U
           }.otherwise {
             pc := pc + 2.U
             was2B_and_next := 1.U
+            step := 0.U // fetch next op
           }
-
-          step := 0.U // fetch next op
         }
 
         when ((was2B_and_next === 1.U) && (have_4B_ops === 1.U)) {
