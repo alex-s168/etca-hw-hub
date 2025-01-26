@@ -42,11 +42,15 @@ The time it takes for a NoC packet to arrive at the destination is not defined.
 
 `NOC_LEN` defines the width of NoC packets in bytes.
 
-All NoC packets sent by one core to a specific port have to arrive in the same order at the destination NoC port.
+All NoC packets sent by one core to a specific port have to arrive in the **same order** at the destination NoC port.
 
 NoC packet send is allowed to block. That could happen when the NoC router on the current core does not have any capacity left,
 which could be caused by the neighbor core sending lots of data trough this core.
 For more details on this, see `NSND` instruction.
+
+To ensure that sent packets will eventually arrive at the destination, use `NFLSH`.
+
+You can **NOT** send packets to a different destination+port between the first `NSND` and the final `NFLSH`
 
 ### Matrix
 If the `CORE_WIDTH` and `CORE_HEIGHT` control registers
@@ -127,21 +131,35 @@ Arguments:
 - target NoC ID: 16 bit. Argument A
 - target NoC port: 3 bit. Argument B
 - pointer to data; stored in `r3`. needs to be as long as `NOC_LEN`
-sends a NoC packet of `NOC_LEN` to the target.
+
+Sends a NoC packet of `NOC_LEN` to the target.
+You can **NOT** send to other destination+port than the last packet, until you called NFLSH
+
+#### NFLSH
+OpCode: `0 0010 0000`
+Notes: 1, 2
+Arguments:
+- target NoC ID: 16 bit. Argument A
+- target NoC port: 3 bit. Argument B
+
+Makes sure that all previous NSND commands will eventually arrive at the destination.
+This does NOT wait for the packet to arrive.
 
 #### NRECV
-OpCode: `0 0010 0001`
+OpCode: `0 0010 0010`
 Notes: 2, 3
 Arguments
 - pointer to data; Argument A. needs to be as long as `NOC_LEN`
 - NoC port: 3 bit. Argument B
+
 Waits for a NoC message to be available on the given port, 
 and moves the data into the given pointer.
 
 #### NAVL
-OpCode: `0 0010 0010`
+OpCode: `0 0010 0011`
 Output:
 - a 8 bit value, where the LSB represents port 0, and the MSB represents port 7
+
 behaviour depends on weather or not in priviliged mode:
 - if in priviliged mode:
   represents which physical ports have data
@@ -157,31 +175,31 @@ For a simple NoC routing implementation, core IDs could represent a 2D location 
 
 ## Example
 ```c
-uint8_t NOC_LEN();
-void noc_recv(uint8_t port, char * data); // NRECV
+void noc_recv(char * data, uint8_t port); // NRECV
 uint8_t noc_available_mask(); // NAVL
-// not supported in user-mode
 void noc_send(uint16_t target_id, uint8_t target_port, char * data); // NSND
+void noc_flush(uint16_t target_id, uint8_t target_port); // NFLSH
 
 // not supported in user-mode
 void noc_sendn(uint16_t target_id, uint8_t target_port, char * data, size_t data_len) {
-  while (data_len >= NOC_LEN()) {
+  while (data_len >= getcr(NOC_LEN)) {
     noc_send(target_id, target_port, data);
-    data += NOC_LEN();
-    data_len -= NOC_LEN();
+    data += getcr(NOC_LEN);
+    data_len -= getcr(NOC_LEN);
   }
   if (data_len > 0) {
-    char buf[NOC_LEN()];
+    char buf[getcr(NOC_LEN)];
     memcpy(buf, data, data_len);
     noc_send(target_id, target_port, buf);
   }
+  noc_flush(target_id, target_port);
 }
 
 // N HAS TO BE THE SAME LENGTH AS N IN NOC_SENDN
 void noc_recvn(uint8_t port, char * data, size_t n) {
   while (n > 0) {
-    char buf[NOC_LEN()];
-    noc_recv(port, buf);
+    char buf[getcr(NOC_LEN)];
+    noc_recv(buf, port);
     size_t mc = n % NOC_LEN();
     memcpy(data, buf, mc);
     data += mc;

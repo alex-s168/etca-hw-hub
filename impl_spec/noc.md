@@ -13,6 +13,19 @@ port IDs are 0-15 (4-bit), where 0-7 (3-bit) are ETC.A NoC ports, and the upper 
 | `10`-`13` | memory read response port |
 
 ```
+/// when a sequence of noc packets is sent that needs a specific order, it might be sent like this:
+///   noc_packet { flow: 4, order: 4, priority: 8 }
+///   noc_packet { flow: 4, order: 9, priority: 8 }
+///   noc_packet { flow: 4, order: 14, priority: 8 }
+///   noc_packet { flow: 4, order: 23, priority: 8 }
+///   noc_packet { flow: 4, order: 33, priority: 8 }
+///   noc_packet { flow: 4, order: 40, priority: 7, also_flush_order: 1 } // low priority packet (always received as last)
+/// which might be reordered in any way during routing (except that the low priority packet is last)
+/// and then gets sorted on receive. When the receiver gets the packet with the also_flush_order flag,
+/// it can process all the received packets on that port
+/// packets with different flow are independent of each other
+///
+/// when sending a single packet, it needs to have also_flush_order set to 1
 struct noc_packet {
     target_x_bitmask: u8,
     target_y_bitmask: u8,
@@ -22,6 +35,12 @@ struct noc_packet {
 
     /// (routing priority) higher = faster
     priority: u4,
+
+    flow: u4,
+    order: u10,
+    also_flush_order: u1,
+
+    empty: u1,
 
     data: [u8; 16]
 }

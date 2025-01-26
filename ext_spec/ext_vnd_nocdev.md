@@ -90,9 +90,10 @@ If the target is `MODE_CPU`:
 ## Example
 list all available NoC devices (priviliged mode)
 ```c
-void noc_recv(uint8_t port, char * data); // NSND
+void noc_recv(char * data, uint8_t port); // NRCV
 uint8_t noc_available_mask(); // NAVL
-void noc_send(uint16_t target_id, uint8_t target_port, char * data); // NRECV
+void noc_send(uint16_t target_id, uint8_t target_port, char * data); // NSND
+void noc_flush(uint16_t target_id, uint8_t target_port); // NFLSH
 
 void noc_sendn(uint16_t target_id, uint8_t target_port, char * data, size_t data_len) {
   while (data_len >= getcr(NOC_LEN)) {
@@ -105,6 +106,7 @@ void noc_sendn(uint16_t target_id, uint8_t target_port, char * data, size_t data
     memcpy(buf, data, data_len);
     noc_send(target_id, target_port, buf);
   }
+  noc_flush(target_id, target_port);
 }
 
 void nocdev_send(uint16_t target_noc, uint8_t function, uint8_t payload_len, char * payload) {
@@ -119,7 +121,7 @@ void nocdev_send(uint16_t target_noc, uint8_t function, uint8_t payload_len, cha
 void noc_recvn(uint8_t port, char * data, size_t n) {
   while (n > 0) {
     char buf[getcr(NOC_LEN)];
-    noc_recv(port, buf);
+    noc_recv(buf, port);
     size_t mc = n % getcr(NOC_LEN);
     memcpy(data, buf, mc);
     data += mc;
@@ -129,7 +131,7 @@ void noc_recvn(uint8_t port, char * data, size_t n) {
 // receive variable length data where u8 prefix says length
 void noc_recv_valen256(uint8_t port, char * payload, uint8_t * len_out) {
   char buf[getcr(NOC_LEN)];
-  noc_recv(port, buf);
+  noc_recv(buf, port);
   *len_out = buf[0];
 
   unsigned step0 = buf[0];
