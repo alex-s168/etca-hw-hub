@@ -135,7 +135,7 @@ class Core() extends Module {
   val F_CCH  = 1L << 2
   val F_MMAI = 1L << 3
 
-  val cpuid1 = C1_SF | C1_8B | C1_ASP | C1_32B | C1_32A
+  val cpuid1 = C1_SF | C1_8B | C1_ASP | C1_32B | C1_32A | C1_FI
   val cpuid2 = 0
   val feat = F_VN
 
@@ -291,6 +291,9 @@ class Core() extends Module {
     return out
   }
 
+  val fi_fetch_done = RegInit(0.U(1.W))
+  val fi_fetch_val = Reg(UInt(32.W))
+
   when (io.reset === 1.U) {
     step := 0.U
     pc := "xFFFF8000".U
@@ -303,6 +306,7 @@ class Core() extends Module {
     }
     store_didld := 0.U
     mode := 0.U
+    fi_fetch_done := 0.U
   }
   .otherwise {
     switch (step) {
@@ -330,6 +334,9 @@ class Core() extends Module {
 
         // simple computational instruction
         when (op === BitPat("b0???????????????")) {
+          val pc_inc = Wire(UInt(4.W))
+          pc_inc := 2.U
+
           val pat = new BitExtract("i_ss_cccc ddd_xxxxx")
           val s = pat('s', op)
           val dest = pat('d', op)
@@ -342,6 +349,9 @@ class Core() extends Module {
             input_sign_extend := 1.U
           }
 
+          val fetch_done = Wire(UInt(1.W))
+          fetch_done := 1.U
+
           val arg = Wire(UInt(32.W))
           when (pat('i', op) === 1.U) {
             val s = pat('x', op)
@@ -352,7 +362,53 @@ class Core() extends Module {
             }
           } .otherwise {
             val pat2 = new BitExtract("sss_mm")
-            arg := gp(pat2('s', op))
+            when (pat2('m',op) === 1.U) {
+              // full immediate
+              when (fi_fetch_done === 1.U) {
+                when (pat2('s',op) === "b010".U) {
+                  pc_inc := 3.U
+                  // 1-byte imm
+                  arg := Cat(Fill(32-8, fi_fetch_val(7)), fi_fetch_val(7,0))
+                }
+                .otherwise { //is b011
+                  // sized (s) imm
+                  arg := 0.U
+                  switch (s) {
+                    is ("b00".U) {
+                      pc_inc := 3.U
+                      arg := Cat(Fill(32-8, fi_fetch_val(7)), fi_fetch_val(7,0))
+                    }
+                    is ("b01".U) {
+                      pc_inc := 4.U
+                      arg := Cat(Fill(32-16, fi_fetch_val(15)), fi_fetch_val(15,0))
+                    }
+                    is ("b10".U) {
+                      pc_inc := 6.U
+                      arg := fi_fetch_val
+                    }
+                  }
+                }
+                fi_fetch_done := 0.U
+                fetch_done := 1.U
+              }
+              .otherwise {
+                arg := 0.U
+                fetch_done := 0.U
+
+                io.ram.have_req := 1.U
+                io.ram.req_iswr := 0.U
+                io.ram.req_addr := fix_addr(pc + 2.U)
+                io.ram.req_wrd := 0.U
+
+                when (io.ram.finished === 1.U) {
+                  fi_fetch_val := io.ram.data
+                  fi_fetch_done := 1.U
+                }
+              }
+            }
+            .otherwise {
+              arg := gp(pat2('s',op))
+            }
           }
 
           val out_value = Wire(UInt(33.W))
@@ -360,89 +416,60 @@ class Core() extends Module {
           val do_test = Wire(UInt(1.W))
           do_test := 0.U
           val mem_ops_done = Wire(UInt(1.W))
-          mem_ops_done := 1.U
-          switch (opcode) {
-            is ("b0000".U) { // add
-              out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), arg)
-              do_test := 1.U
-            }
-            is ("b0001".U) { // sub
-              out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), ~arg) + 1.U
-              do_test := 1.U
-            }
-            is ("b0010".U) { // rsub
-              out_value := Cat(Fill(1,0.U), arg) + Cat(Fill(1,0.U), ~gp(dest)) + 1.U
-              do_test := 1.U
-            }
-            is ("b0011".U) { // cmp
-              out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), ~arg) + 1.U
-              do_test := 1.U
-            }
-            is ("b0100".U) { // or
-              out_value := Cat(Fill(1,0.U), gp(dest) | arg)
-              do_test := 1.U
-            }
-            is ("b0101".U) { // xor
-              out_value := Cat(Fill(1,0.U), gp(dest) ^ arg)
-              do_test := 1.U
-            }
-            is ("b0110".U) { // and
-              out_value := Cat(Fill(1,0.U), gp(dest) & arg)
-              do_test := 1.U
-            }
-            is ("b0111".U) { // test
-              out_value := Cat(Fill(1,0.U), gp(dest) & arg)
-              do_test := 1.U
-            }
-            is ("b1000".U) { // movz
-              out_value := Cat(Fill(1,0.U), arg)
-              do_test := 1.U
-            }
-            is ("b1001".U) { // movs
-              out_value := Cat(Fill(1,0.U), arg)
-              do_test := 1.U
-            }
-            is ("b1010".U) { // load
-              io.ram.have_req := 1.U
-              io.ram.req_iswr := 0.U
-              io.ram.req_addr := fix_addr(arg)
-              io.ram.req_wrd := 0.U
-              when (io.ram.finished === 1.U) {
-                out_value := io.ram.data
+          
+          when (fetch_done === 0.U) {
+            mem_ops_done := 0.U
+          }
+          .otherwise {
+            mem_ops_done := 1.U
+            switch (opcode) {
+              is ("b0000".U) { // add
+                out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), arg)
+                do_test := 1.U
               }
-              .otherwise {
-                // will always go into this branch until data received
-                out_value := 0.U
-                mem_ops_done := 0.U
+              is ("b0001".U) { // sub
+                out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), ~arg) + 1.U
+                do_test := 1.U
               }
-
-              do_test := 0.U
-            }
-            is ("b1011".U) { // store
-              gen_write(s, fix_addr(arg), gp(dest), mem_ops_done)
-
-              out_value := 0.U
-              do_test := 0.U
-            }
-            is ("b1100".U) {
-              when (pat('i', op) === 1.U) { // slo
-                out_value := Cat(Fill(1,0.U), (gp(dest) << 5) | arg(4,0))
-                do_test := 0.U
+              is ("b0010".U) { // rsub
+                out_value := Cat(Fill(1,0.U), arg) + Cat(Fill(1,0.U), ~gp(dest)) + 1.U
+                do_test := 1.U
               }
-              .otherwise { // pop
-                val sp = pat('x', op) >> 2
-
+              is ("b0011".U) { // cmp
+                out_value := Cat(Fill(1,0.U), gp(dest)) + Cat(Fill(1,0.U), ~arg) + 1.U
+                do_test := 1.U
+              }
+              is ("b0100".U) { // or
+                out_value := Cat(Fill(1,0.U), gp(dest) | arg)
+                do_test := 1.U
+              }
+              is ("b0101".U) { // xor
+                out_value := Cat(Fill(1,0.U), gp(dest) ^ arg)
+                do_test := 1.U
+              }
+              is ("b0110".U) { // and
+                out_value := Cat(Fill(1,0.U), gp(dest) & arg)
+                do_test := 1.U
+              }
+              is ("b0111".U) { // test
+                out_value := Cat(Fill(1,0.U), gp(dest) & arg)
+                do_test := 1.U
+              }
+              is ("b1000".U) { // movz
+                out_value := Cat(Fill(1,0.U), arg)
+                do_test := 1.U
+              }
+              is ("b1001".U) { // movs
+                out_value := Cat(Fill(1,0.U), arg)
+                do_test := 1.U
+              }
+              is ("b1010".U) { // load
                 io.ram.have_req := 1.U
                 io.ram.req_iswr := 0.U
-                io.ram.req_addr := fix_addr(gp(sp))
+                io.ram.req_addr := fix_addr(arg)
                 io.ram.req_wrd := 0.U
                 when (io.ram.finished === 1.U) {
                   out_value := io.ram.data
-                  switch (s) {
-                    is ("b00".U) { gp(sp) := gp(sp) + 1.U }
-                    is ("b01".U) { gp(sp) := gp(sp) + 2.U }
-                    is ("b10".U) { gp(sp) := gp(sp) + 4.U }
-                  }
                 }
                 .otherwise {
                   // will always go into this branch until data received
@@ -452,79 +479,113 @@ class Core() extends Module {
 
                 do_test := 0.U
               }
+              is ("b1011".U) { // store
+                gen_write(s, fix_addr(arg), gp(dest), mem_ops_done)
+
+                out_value := 0.U
+                do_test := 0.U
+              }
+              is ("b1100".U) {
+                when (pat('i', op) === 1.U) { // slo
+                  out_value := Cat(Fill(1,0.U), (gp(dest) << 5) | arg(4,0))
+                  do_test := 0.U
+                }
+                .otherwise { // pop
+                  val sp = pat('x', op) >> 2
+
+                  io.ram.have_req := 1.U
+                  io.ram.req_iswr := 0.U
+                  io.ram.req_addr := fix_addr(gp(sp))
+                  io.ram.req_wrd := 0.U
+                  when (io.ram.finished === 1.U) {
+                    out_value := io.ram.data
+                    switch (s) {
+                      is ("b00".U) { gp(sp) := gp(sp) + 1.U }
+                      is ("b01".U) { gp(sp) := gp(sp) + 2.U }
+                      is ("b10".U) { gp(sp) := gp(sp) + 4.U }
+                    }
+                  }
+                  .otherwise {
+                    // will always go into this branch until data received
+                    out_value := 0.U
+                    mem_ops_done := 0.U
+                  }
+
+                  do_test := 0.U
+                }
+              }
+              is ("b1101".U) { // push
+                // dest is sp
+                val sz = Wire(UInt(3.W))
+                sz := 0.U
+                switch (s) {
+                  is ("b00".U) { sz := 1.U }
+                  is ("b01".U) { sz := 2.U }
+                  is ("b10".U) { sz := 4.U }
+                }
+                gen_write(s, fix_addr(gp(dest) - sz), arg, mem_ops_done)
+                when (mem_ops_done === 1.U) {
+                  gp(dest) := gp(dest) - sz
+                }
+
+                out_value := 0.U
+                do_test := 0.U
+              }
+              is ("b1110".U) { // readcr
+                out_value := 0.U
+                switch (arg) {
+                  is (0.U) { out_value := cpuid1.U }
+                  is (1.U) { out_value := cpuid2.U }
+                  is (2.U) { out_value := feat.U }
+                }
+                do_test := 0.U
+              }
+              is ("b1111".U) { // writecr
+                switch (arg) {
+                  is (17.U) {
+                    mode := gp(dest) 
+                  }
+                }
+                out_value := 0.U
+                do_test := 0.U
+              }
             }
-            is ("b1101".U) { // push
-              // dest is sp
-              val sz = Wire(UInt(3.W))
-              sz := 0.U
+
+            when (do_test === 1.U) {
+              def gen(width: Int) = {
+                fl_z := out_value(width-1, 0) === 0.U
+                fl_n := out_value(width-1)
+                when ((opcode === BitPat("b00??")) && opcode =/= 0.U) {
+                  fl_c := !out_value(32)
+                }.otherwise {
+                  fl_c := out_value(32,width) > 0.U
+                }
+
+                val moda = Wire(UInt(32.W))
+                moda := gp(dest)
+                val modb = Wire(UInt(32.W))
+                modb := arg
+                switch (opcode) {
+                  is ("b0001".U) { // sub
+                    modb := ~arg
+                  }
+                  is ("b0010".U) { // rsub
+                    moda := ~arg
+                    modb := gp(dest)
+                  }
+                  is ("b0011".U) { // cmp
+                    modb := ~arg
+                  }
+                }
+
+                fl_v := (moda(width-1) === modb(width-1)) && (out_value(width-1) =/= moda(width-1))
+              }
+
               switch (s) {
-                is ("b00".U) { sz := 1.U }
-                is ("b01".U) { sz := 2.U }
-                is ("b10".U) { sz := 4.U }
+                is ("b00".U) { gen(8) }
+                is ("b01".U) { gen(16) }
+                is ("b10".U) { gen(32) }
               }
-              gen_write(s, fix_addr(gp(dest) - sz), arg, mem_ops_done)
-              when (mem_ops_done === 1.U) {
-                gp(dest) := gp(dest) - sz
-              }
-
-              out_value := 0.U
-              do_test := 0.U
-            }
-            is ("b1110".U) { // readcr
-              out_value := 0.U
-              switch (arg) {
-                is (0.U) { out_value := cpuid1.U }
-                is (1.U) { out_value := cpuid2.U }
-                is (2.U) { out_value := feat.U }
-              }
-              do_test := 0.U
-            }
-            is ("b1111".U) { // writecr
-              switch (arg) {
-                is (17.U) {
-                  printf("mode changed to x%x\n", gp(dest))
-                  mode := gp(dest) 
-                }
-              }
-              out_value := 0.U
-              do_test := 0.U
-            }
-          }
-
-          when (do_test === 1.U) {
-            def gen(width: Int) = {
-              fl_z := out_value(width-1, 0) === 0.U
-              fl_n := out_value(width-1)
-              when ((opcode === BitPat("b00??")) && opcode =/= 0.U) {
-                fl_c := !out_value(32)
-              }.otherwise {
-                fl_c := out_value(32,width) > 0.U
-              }
-
-              val moda = Wire(UInt(32.W))
-              moda := gp(dest)
-              val modb = Wire(UInt(32.W))
-              modb := arg
-              switch (opcode) {
-                is ("b0001".U) { // sub
-                  modb := ~arg
-                }
-                is ("b0010".U) { // rsub
-                  moda := ~arg
-                  modb := gp(dest)
-                }
-                is ("b0011".U) { // cmp
-                  modb := ~arg
-                }
-              }
-
-              fl_v := (moda(width-1) === modb(width-1)) && (out_value(width-1) =/= moda(width-1))
-            }
-
-            switch (s) {
-              is ("b00".U) { gen(8) }
-              is ("b01".U) { gen(16) }
-              is ("b10".U) { gen(32) }
             }
           }
 
@@ -553,9 +614,11 @@ class Core() extends Module {
               }
             }
 
-            pc := pc + 2.U
+            pc := pc + pc_inc
             step := 0.U // fetch next op
-            was2B_and_next := 1.U
+            when (pc_inc === 2.U) {
+              was2B_and_next := 1.U
+            }
           }
         }
 
@@ -627,7 +690,7 @@ class Core() extends Module {
 
 class TestCPU() extends Module {
   val mem = Module(new MemMap(Map(
-    0x00000000L -> 64L*1024L*1024L, // 64 MB (prog heap)
+    0x00000000L ->  4L*1024L*1024L, // 4 MB (prog heap)
     0x80000000L -> 64L*1024L,       // 64 KB (asm heap)
     0xFFFF0000L -> 64L*1024L,       // 64 KB (stack + program)
   )).gen())
@@ -647,6 +710,8 @@ class TestCPU() extends Module {
   io.core_pc := core.io.core_pc
   io.core_regs := core.io.core_regs
 
+  core.io.reset := io.reset
+
   when (io.ram.have_req === 1.U) {
     io.ram <> mem.io;
     core.io.ram.finished := 0.U
@@ -656,8 +721,6 @@ class TestCPU() extends Module {
     io.ram.finished := 0.U
     io.ram.data := mem.io.data
   }
-
-  core.io.reset := io.reset
 }
 
 object Main extends App {

@@ -1,3 +1,6 @@
+output.json
+design.json
+slpp_all
 .bsp
 .clangd
 .scala-build
