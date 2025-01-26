@@ -1,11 +1,11 @@
 # NoC extension
 (Network-on-Chip)
 
-**Requires: Base, Multi-Core**
+**Requires: Base, Multi-Core, Expanded-Opcodes**
 
 **Optional: Interrupts, Priviliged Mode**
 
-**CPUID Bit: ???**
+**CPUID Bit: CP2.9**
 
 Note that this extension developed with https://github.com/ETC-A/etca-spec/pull/74 in mind.
 
@@ -99,16 +99,18 @@ If the core receives a NoC message:
 ```
 
 ### Control Registers
-| CRN      | Name          | Description            | priviliged-mode read | priviliged-mode write | user-mode read | user-mode write |
-| -------- | ------------- | ---------------------- | -------------------- | --------------------- | -------------- | --------------- |
-| `??????` | `CORE_WIDTH`  | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
-| `??????` | `CORE_HEIGHT` | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
-| `??????` | `CORE_POSX`   | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
-| `??????` | `CORE_POSY`   | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
-| `??????` | `NOC_EXTRA`   | see #Participants      | 16-bit value         | undefined             | gp fault       | gp fault        |
-| `??????` | `NOC_LEN`     | NoC messsage size (3)  | 8-bit value          | undefined             | 8-bit value    | gp fault        |
-| `??????` | `NOC_VIRT`    | see #User-Mode (1)     | undefined            | 16-bit value          | gp fault       | gp fault        |
-| `??????` | `NOC_INTMASK` | see #Recv-Ints (1) (2) |  8-bit value         | 8-bit value           | gp fault       | gp fault        |
+| CRN     | Name          | Description            | priviliged-mode read | priviliged-mode write | user-mode read | user-mode write |
+| ------- | ------------- | ---------------------- | -------------------- | --------------------- | -------------- | --------------- |
+| `cr133` | `CORE_WIDTH`  | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
+| `cr134` | `CORE_HEIGHT` | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
+| `cr135` | `CORE_POSX`   | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
+| `cr136` | `CORE_POSY`   | see #Matrix            | 8-bit value          | undefined             | 8-bit value    | gp fault        |
+| `cr137` | `NOC_EXTRA`   | see #Participants      | 16-bit value         | undefined             | gp fault       | gp fault        |
+| `cr138` | `NOC_LEN`     | NoC messsage size (3)  | 8-bit value          | undefined             | 8-bit value    | gp fault        |
+| `cr139` | `NOC_VIRT`    | see #User-Mode (1)     | undefined            | 16-bit value          | gp fault       | gp fault        |
+| `cr140` | `NOC_INTMASK` | see #Recv-Ints (1) (2) | 8-bit value          | 8-bit value           | gp fault       | gp fault        |
+
+Reads are zero-extended to the register width.
 
 1) Initialized with all zeros on core startup
 
@@ -116,26 +118,28 @@ If the core receives a NoC message:
 
 3) This value has to be identical on all cores
 
-### Opcode Table
+### Opcodes
+
 #### NSND
+OpCode: `0 0010 0000`
 Notes: 1, 2, 3
 Arguments:
-- target NoC ID: 16 bit in register
-- target NoC port: 3 bit in register
-- pointer to data; needs to be as long as `NOC_LEN`
+- target NoC ID: 16 bit. Argument A
+- target NoC port: 3 bit. Argument B
+- pointer to data; stored in `r3`. needs to be as long as `NOC_LEN`
 sends a NoC packet of `NOC_LEN` to the target.
 
 #### NRECV
+OpCode: `0 0010 0001`
 Notes: 2, 3
 Arguments
-- NoC port: 3 bit in register
-- pointer to data; needs to be as long as `NOC_LEN`
+- pointer to data; Argument A. needs to be as long as `NOC_LEN`
+- NoC port: 3 bit. Argument B
 Waits for a NoC message to be available on the given port, 
 and moves the data into the given pointer.
 
 #### NAVL
-Arguments:
-- output register
+OpCode: `0 0010 0010`
 Output:
 - a 8 bit value, where the LSB represents port 0, and the MSB represents port 7
 behaviour depends on weather or not in priviliged mode:
@@ -149,15 +153,15 @@ behaviour depends on weather or not in priviliged mode:
 3) When interrupted: reverts operation, and re-does it when interrupt is done
 
 ## Impelemtation Recommendations
-For a simple NoC routing implementation, core IDs should represent a 2D location in the core matrix
+For a simple NoC routing implementation, core IDs could represent a 2D location in the core matrix, making routing easier.
 
 ## Example
 ```c
 uint8_t NOC_LEN();
-void noc_recv(uint8_t port, char * data); // NSND
+void noc_recv(uint8_t port, char * data); // NRECV
 uint8_t noc_available_mask(); // NAVL
 // not supported in user-mode
-void noc_send(uint16_t target_id, uint8_t target_port, char * data); // NRECV
+void noc_send(uint16_t target_id, uint8_t target_port, char * data); // NSND
 
 // not supported in user-mode
 void noc_sendn(uint16_t target_id, uint8_t target_port, char * data, size_t data_len) {

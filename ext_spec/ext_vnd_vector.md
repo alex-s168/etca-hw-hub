@@ -1,4 +1,7 @@
 # Vendor Vector Extension
+
+**EXTREMLY WORK IN PROGRESS**
+
 simple and usable variable-length vector extension, with only integer data. (float data is an extension)
 
 ## Definitions
@@ -50,6 +53,8 @@ a future floating point extensions might add:
 - `f16` - 16 bit IEEE 754 floating point number
 - `f32` - 32 bit IEEE 754 floating point number
 - `f64` - 64 bit IEEE 754 floating point number
+
+TODO: non-standard floats
 
 ## Vector Operation Types
 All vector operations take in any amount of vectors and scalars and output one scalar or vector.

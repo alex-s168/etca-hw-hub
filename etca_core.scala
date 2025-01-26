@@ -48,10 +48,6 @@ class MemMap(areas: /*byte address -> size*/ Map[Long, Long])
     new AsyncMemImpl[List[SyncReadMem[UInt]]](
       () => areas.map{case (_,sz:Long) => SyncReadMem(sz, UInt(32.W))}.toList,
       (mems, addr,wrd,en,wr) => {
-        when (addr === 0.U && wr) {
-          printf("putc: %c\n", wrd(31,24))
-        }
-
         val out = Wire(UInt(32.W))
         out := 0.U
         for (((begin, sz), mem) <- areas zip mems) {

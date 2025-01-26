@@ -3,7 +3,7 @@
 
 **Requires: Base**
 
-**CPUID Bit: ???**
+**CPUID Bit: CP2.8**
 
 ## Overview
 Specifies how a multi-core system works.
@@ -69,13 +69,13 @@ It is recommended for a CPU to distribute the interrupts across cores evenly.
 
 ## Added Control Registers 
 
-|   CRN    |    Name     | Description     | priviliged-mode read | priviliged-mode write | user-mode read | user-mode write |
-| -------- | ----------- | --------------- | -------------------- | --------------------- | -------------- | --------------- |
-| `??????` | `CORE_ID`   | current core ID | 16-bit value         | undefined             | 16-bit value   | gp fault        |
-| `??????` | `CORE_NUM`  | amount of cores | 16-bit value         | undefined             | 16-bit value   | gp fault        |
-| `??????` | `MCORE_EN`  | (1)             | undefined            | 1-bit value (1)       | undefined      | gp fault        |
-| `??????` | `CLS_BEGIN` | (2)             | data-width value     | undefined             | gp fault       | gp fault        |
-| `??????` | `CLS_SIZE`  | (3)             | data-width value     | undefined             | gp fault       | gp fault        |
+|   CRN   |    Name     | Description     | priviliged-mode read | priviliged-mode write | user-mode read | user-mode write |
+| ------- | ----------- | --------------- | -------------------- | --------------------- | -------------- | --------------- |
+| `cr128` | `CORE_ID`   | current core ID | 16-bit value         | undefined             | 16-bit value   | gp fault        |
+| `cr129` | `CORE_NUM`  | amount of cores | 16-bit value         | undefined             | 16-bit value   | gp fault        |
+| `cr130` | `MCORE_EN`  | (1)             | undefined            | 1-bit value (1)       | undefined      | gp fault        |
+| `cr131` | `CLS_BEGIN` | (2)             | data-width value     | undefined             | gp fault       | gp fault        |
+| `cr132` | `CLS_SIZE`  | (3)             | data-width value     | undefined             | gp fault       | gp fault        |
 
 1) When writing a `1` into it, all cores in the processor start executing. Writing a `0` causes a gp fault. If however the system is independent multicore, this does nothing.
 
