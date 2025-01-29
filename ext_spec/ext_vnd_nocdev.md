@@ -1,6 +1,8 @@
 # NoC Extra-Devices Extension
 Depends on NoC extension.
 
+If this extension is implemented, it would make sense to also implement async NoC
+
 This extension adds no processor or core features. It only specifies the behaviour of additional NoC participants.
 
 This extension only defines the behaviour of NoC port `0` on all additional NoC participants.
