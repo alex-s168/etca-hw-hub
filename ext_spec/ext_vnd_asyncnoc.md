@@ -1,5 +1,4 @@
 # Asynchronous NoC extension
-**W I P**
 
 TODO:
 - interrupt mask for int when done
@@ -10,9 +9,12 @@ Depends on: NoC
 This extension allows programs to receive NoC data whilst doing something else,
 making NoC way more useful.
 
-This can only be used in **priviliged mode**, for simplicity reasons.
-
 Implementing this extension **without** having core-local memory is __stupid__
+
+Implementing this extension in an out-of-order CPU isn't smart either, because you could have multiple execution ports that perform normal NoC send or receive instructions.
+
+## Specification
+This can only be used in **priviliged mode**, for simplicity reasons.
 
 There are `NUM_NOC_ASYNC` async NoC controllers, which is at least one.
 
