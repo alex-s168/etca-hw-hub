@@ -3,7 +3,6 @@
 
 TODO:
 - interrupt mask for int when done
-- what happens when reading `noc_ctl_t` with different mode setting than system width? are ptrs vaid?
 
 Depends on: NoC
 
@@ -36,29 +35,40 @@ Reading from a field of a NoC controller is undefined, except for `mult`, which 
 Writing to the `mult` field will start the async NoC controller.
 Writing to the other fields configures the async NoC controller.
 
+When writing to the buf field, you have to write the correct variant of the union, based on your current address mode. The hardware sign extends that to the physical address size.
+
 ```c
 typedef struct {
-  uint8_t /* bool */ send;
-  char* buf;
+  uint8_t  /* bool */ send;
+  union {
+    uint16_t a16;
+    uint32_t a32;
+    uint64_t a64;
+  } buf; /* char* */
   volatile uint16_t mult;
-  uint8_t nocport;
+  uint8_t  nocport;
   uint16_t target;
 } __attribute__((packed)) noc_ctl_t;
 ```
 
 ## Example
 ```c
+#if sizeof(void*) == 2
+# define ADDR_SIZE 16
+#elif sizeof(void*) == 4
+# define ADDR_SIZE 32
+#elif sizeof(void*) == 8
+# define ADDR_SIZE 64
+#endif
+
 void noc_recv(char * data, uint8_t port); // NRCV
 uint8_t noc_available_mask(); // NAVL
 void noc_send(uint16_t target_id, uint8_t target_port, char * data); // NSND
 void noc_flush(uint16_t target_id, uint8_t target_port); // NFLSH
-typedef struct {
-  uint8_t send; char* buf; volatile uint16_t mult; uint8_t nocport; uint16_t target;
-} __attribute__((packed)) noc_ctl_t;
 void noc_async_cfg(uint8_t ctl, bool send, char* buf, size_t mult, uint8_t nocport, uint16_t target) {
   noc_ctl_t* p = &((noc_ctl_t*)(void*)getcr(NOC_ASYNC_CFG_BASE))[ctl];
   p->send = send;
-  p->buf = buf;
+  p->buf.a##ADDR_SIZE = buf;
   p->nocport = nocport;
   p->target = target;
   p->mult = mult; // set this last!
